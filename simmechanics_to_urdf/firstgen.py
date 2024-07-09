@@ -359,6 +359,24 @@ class Converter:
         # Add it to the URDF
         self.urdf_xml.append(gazebo_origin_el);
 
+    def addElementToExportedFramesMap(self, key, elem):
+        # If the key is not in the map, we just add it
+        if key not in self.exportedFramesMap.keys():
+            self.exportedFramesMap[key] = {}
+            # We copy all keys, except for exportedFrameName, 
+            # as in general we instead keep a vector attribute called
+            # exportedFrameNames to support exporting the same useradded frames
+            # multiple times with different names
+            for k in elem.keys():
+                if k != "exportedFrameName":
+                    self.exportedFramesMap[key][k] = elem[k]
+                else:
+                    self.exportedFramesMap[key]["exportedFrameNames"] = []
+                    self.exportedFramesMap[key]["exportedFrameNames"].append(elem["exportedFrameName"])
+        else:
+            # if the key is already in the map, we just append the exportedFrameName to exportedFrameNames
+            self.exportedFramesMap[key]["exportedFrameNames"].append(elem["exportedFrameName"])
+
     def parseYAMLConfig(self, configFile):
         """Parse the YAML configuration File, if it exists.
            Set the fields the default if the config does
@@ -424,13 +442,11 @@ class Converter:
         self.exportedFramesMap = {}
         for exported_frame in exportedFrames:
             if (exported_frame.get("frameReferenceLink") is not None):
-                self.exportedFramesMap[
-                    (exported_frame["frameReferenceLink"], exported_frame["frameName"])] = exported_frame;
+                self.addElementToExportedFramesMap((exported_frame["frameReferenceLink"], exported_frame["frameName"]), exported_frame)
             else:
                 # if the frameReferenceLink is missing, just add the export_frame dict using only the frameName as key:
                 # we will add the full tutple (frameReferenceLink,frameName) later
-                self.exportedFramesMap[exported_frame["frameName"]] = exported_frame;
-
+                self.addElementToExportedFramesMap(exported_frame["frameName"], exported_frame)
 
         # Augment the exported frames with sensors for which the exportFrameInURDF option is enabled
         for ftSens in self.forceTorqueSensors:
@@ -456,10 +472,7 @@ class Converter:
                 if (map_key in self.exportedFramesMap.keys() and ("additionalTransformation" in self.exportedFramesMap[map_key].keys())):
                     existing_exported_frame = self.exportedFramesMap[map_key];
                     exported_frame["additionalTransformation"] = existing_exported_frame["additionalTransformation"];
-                self.exportedFramesMap[
-                    (exported_frame["frameReferenceLink"], exported_frame["frameName"])] = exported_frame;
-
-
+                self.addElementToExportedFramesMap((exported_frame["frameReferenceLink"], exported_frame["frameName"]), exported_frame)
 
         # Get default parameters in "sensors" list
         # As we build the list of default sensors, we track the
@@ -504,8 +517,8 @@ class Converter:
                 if (map_key in self.exportedFramesMap.keys() and ("additionalTransformation" in self.exportedFramesMap[map_key].keys())):
                     existing_exported_frame = self.exportedFramesMap[map_key];
                     exported_frame["additionalTransformation"] = existing_exported_frame["additionalTransformation"];
-                self.exportedFramesMap[
-                    (exported_frame["frameReferenceLink"], exported_frame["frameName"])] = exported_frame;
+                
+                self.addElementToExportedFramesMap((exported_frame["frameReferenceLink"], exported_frame["frameName"]), exported_frame)
 
         # Load scales options
         scale_str = configuration.get('scale', None)
@@ -708,8 +721,6 @@ class Converter:
                     (parent_link, useradded_frame_name) in self.exportedFramesMap.keys()):
                     map_key = (parent_link, useradded_frame_name);
                     if (map_key in self.exportedFramesMap.keys()):
-                        if ("exportedFrameName" in self.exportedFramesMap[map_key].keys()):
-                            useradded_frame_name = self.exportedFramesMap[map_key]["exportedFrameName"];
                         if ("additionalTransformation" in self.exportedFramesMap[map_key].keys()):
                             addTransform = self.exportedFramesMap[map_key]["additionalTransformation"];
 
@@ -719,25 +730,56 @@ class Converter:
                                 link_R_sensorOriginal = quaternion_matrix(quat)
                                 offset = numpy.add(offset, numpy.matmul(link_R_sensorOriginal[0:3,0:3], addTransform[0:3]))
                                 quat = quaternion_from_matrix(numpy.matmul(link_R_sensorOriginal, sensorOriginal_R_sensorModifed))
-                    fid = useradded_frame_name + "CS1"
-                    extraframe = {'parentlink': parent_link, 'framename': useradded_frame_name}
-                    self.extraframes = self.extraframes + [extraframe]
-                    # add link to self.links structure
-                    linkdict = {}
-                    linkdict['name'] = useradded_frame_name
-                    fdict['parent'] = useradded_frame_name
-                    linkdict['neighbors'] = []
-                    linkdict['children'] = []
-                    linkdict['jointmap'] = {}
-                    linkdict['frames'] = None
-                    linkdict['uid'] = linkdict['name']
-                    self.links[useradded_frame_name] = linkdict
 
-                # Storing the displayName to the fid of the frame, to retrive the USERADDED frame when assigning link frames
-                self.linkNameDisplayName2fid[(parent_link, fdict['displayName'])] = fid;
+                    if ("exportedFrameNames" not in self.exportedFramesMap[map_key].keys()):
+                        fid = useradded_frame_name + "CS1"
+                        extraframe = {'parentlink': parent_link, 'framename': useradded_frame_name}
+                        self.extraframes = self.extraframes + [extraframe]
+                        # add link to self.links structure
+                        linkdict = {}
+                        linkdict['name'] = useradded_frame_name
+                        fdict['parent'] = useradded_frame_name
+                        linkdict['neighbors'] = []
+                        linkdict['children'] = []
+                        linkdict['jointmap'] = {}
+                        linkdict['frames'] = None
+                        linkdict['uid'] = linkdict['name']
+                        self.links[useradded_frame_name] = linkdict
+                        # Storing the displayName to the fid of the frame, to retrive the USERADDED frame when assigning link frames
+                        self.linkNameDisplayName2fid[(parent_link, fdict['displayName'])] = fid
+                        self.tfman.add(offset, quat, WORLD, fid)
+                        self.frames[fid] = fdict
+                    else:
+                        for exported_frame in self.exportedFramesMap[map_key]["exportedFrameNames"]:
+                            new_fdict = fdict.copy()
+                            fid = exported_frame + "CS1"
+                            extraframe = {'parentlink': parent_link, 'framename': exported_frame}
+                            self.extraframes = self.extraframes + [extraframe]
+                            # add link to self.links structure
+                            linkdict = {}
+                            linkdict['name'] = exported_frame
+                            new_fdict['parent'] = exported_frame
+                            linkdict['neighbors'] = []
+                            linkdict['children'] = []
+                            linkdict['jointmap'] = {}
+                            linkdict['frames'] = None
+                            linkdict['uid'] = linkdict['name']
+                            self.links[exported_frame] = linkdict
+                            self.linkNameDisplayName2fid[(parent_link, fdict['displayName'])] = fid
+                            self.tfman.add(offset, quat, WORLD, fid)
+                            self.frames[fid] = new_fdict
+                else:
+                    self.linkNameDisplayName2fid[(parent_link, fdict['displayName'])] = fid
+                    self.tfman.add(offset, quat, WORLD, fid)
+                    self.frames[fid] = fdict
+            else:
+                self.tfman.add(offset, quat, WORLD, fid)
+                self.frames[fid] = fdict
 
-            self.tfman.add(offset, quat, WORLD, fid)
-            self.frames[fid] = fdict
+
+
+
+
 
     def parseJoint(self, element):
         """Parse the joint from xml"""
@@ -863,7 +905,6 @@ class Converter:
             cid = self.getLinkNameByFrame(jointdict['child'])
             parent = self.links[pid]
             child = self.links[cid]
-
             parent['neighbors'].append(cid)
             parent['jointmap'][cid] = jid
             child['neighbors'].append(pid)
